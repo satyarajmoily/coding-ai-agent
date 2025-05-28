@@ -1,0 +1,53 @@
+# Coding AI Agent - Development Dockerfile
+FROM python:3.9-slim
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Install system dependencies including development tools
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    vim \
+    htop \
+    tree \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Docker CLI
+RUN curl -fsSL https://get.docker.com | sh
+
+# Create application user with sudo access for development
+RUN useradd -m -s /bin/bash coder && \
+    usermod -aG docker coder && \
+    apt-get update && apt-get install -y sudo && \
+    echo "coder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements and install dependencies
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Create necessary directories
+RUN mkdir -p /tmp/coding-agent-workspaces && \
+    chown -R coder:coder /tmp/coding-agent-workspaces
+
+# Switch to application user
+USER coder
+
+# Create development convenience scripts
+RUN echo '#!/bin/bash\npython -m uvicorn src.coding_agent.main:app --reload --host 0.0.0.0 --port 8002' > /home/coder/run-dev.sh && \
+    chmod +x /home/coder/run-dev.sh
+
+RUN echo '#!/bin/bash\npytest tests/ -v --cov=src --cov-report=html' > /home/coder/run-tests.sh && \
+    chmod +x /home/coder/run-tests.sh
+
+# Expose port
+EXPOSE 8002
+
+# Default command for development
+CMD ["python", "-m", "uvicorn", "src.coding_agent.main:app", "--reload", "--host", "0.0.0.0", "--port", "8002"]

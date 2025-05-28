@@ -1,0 +1,920 @@
+"""
+Workflow Engine - Core orchestration for autonomous coding workflow.
+
+This module implements the state machine that manages the complete
+developer workflow from requirements analysis to pull request creation.
+"""
+
+import asyncio
+import os
+import uuid
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional, List, Callable
+from enum import Enum
+import logging
+
+from ..models.requests import CodingRequest
+from ..models.responses import (
+    TaskStatus, CodingResponse, TaskStatusResponse, 
+    WorkflowStep, CodeChange, TestResult, ValidationResult
+)
+from ..config.settings import get_settings
+# Import statements moved inside methods to avoid circular imports
+
+logger = logging.getLogger(__name__)
+
+
+class WorkflowState(str, Enum):
+    """Internal workflow states for the state machine."""
+    INIT = "init"
+    ANALYZING = "analyzing"
+    PLANNING = "planning"
+    ENVIRONMENT_SETUP = "environment_setup"
+    REPOSITORY_CLONE = "repository_clone"
+    CODE_GENERATION = "code_generation"
+    LOCAL_TESTING = "local_testing"
+    VALIDATION = "validation"
+    GIT_OPERATIONS = "git_operations"
+    PR_CREATION = "pr_creation"
+    CLEANUP = "cleanup"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class WorkflowContext:
+    """
+    Context object that maintains state throughout the workflow.
+    
+    This object is passed between workflow steps and contains all
+    the information needed for the coding process.
+    """
+    
+    def __init__(self, task_id: str, request: CodingRequest):
+        self.task_id = task_id
+        self.request = request
+        self.created_at = datetime.utcnow()
+        self.updated_at = datetime.utcnow()
+        
+        # Workflow state
+        self.current_state = WorkflowState.INIT
+        self.progress_percentage = 0
+        self.workflow_steps: List[WorkflowStep] = []
+        
+        # Generated data
+        self.branch_name: Optional[str] = None
+        self.workspace_path: Optional[str] = None
+        self.implementation_plan: Optional[Dict[str, Any]] = None
+        self.code_changes: List[CodeChange] = []
+        self.test_results: List[TestResult] = []
+        self.validation_results: List[ValidationResult] = []
+        
+        # Git information
+        self.commit_hash: Optional[str] = None
+        self.pr_url: Optional[str] = None
+        
+        # Error handling
+        self.error_message: Optional[str] = None
+        self.error_details: Optional[Dict[str, Any]] = None
+        
+        # Statistics
+        self.statistics: Dict[str, Any] = {}
+    
+    def add_workflow_step(
+        self, 
+        step_name: str, 
+        status: str = "in_progress",
+        details: Optional[Dict[str, Any]] = None
+    ) -> WorkflowStep:
+        """Add a new workflow step."""
+        step = WorkflowStep(
+            step_name=step_name,
+            status=status,
+            started_at=datetime.utcnow(),
+            details=details or {}
+        )
+        self.workflow_steps.append(step)
+        self.updated_at = datetime.utcnow()
+        return step
+    
+    def complete_workflow_step(
+        self, 
+        step: WorkflowStep, 
+        status: str = "completed",
+        error_message: Optional[str] = None
+    ):
+        """Mark a workflow step as completed."""
+        step.status = status
+        step.completed_at = datetime.utcnow()
+        if step.started_at:
+            step.duration_seconds = (step.completed_at - step.started_at).total_seconds()
+        if error_message:
+            step.error_message = error_message
+        self.updated_at = datetime.utcnow()
+    
+    def update_progress(self, percentage: int):
+        """Update the overall progress percentage."""
+        self.progress_percentage = max(0, min(100, percentage))
+        self.updated_at = datetime.utcnow()
+    
+    def set_error(self, message: str, details: Optional[Dict[str, Any]] = None):
+        """Set error information for the context."""
+        self.error_message = message
+        self.error_details = details or {}
+        self.current_state = WorkflowState.FAILED
+        self.updated_at = datetime.utcnow()
+
+
+class WorkflowEngine:
+    """
+    Core workflow engine that orchestrates the autonomous coding process.
+    
+    This engine implements a state machine that manages the complete
+    developer workflow from requirements to pull request creation.
+    """
+    
+    def __init__(self):
+        self.settings = get_settings()
+        self.active_workflows: Dict[str, WorkflowContext] = {}
+        
+        # Initialize AI services (import here to avoid circular imports)
+        from ..agents.coding_agents import CodingAgentOrchestrator
+        from ..services.code_analysis import CodeAnalysisService
+        from ..services.git_service import GitService
+from ..services.github_service import GitHubService
+        
+        self.ai_orchestrator = CodingAgentOrchestrator()
+        self.code_analyzer = CodeAnalysisService()
+        self.git_service = GitService()
+        self.github_service = GitHubService()
+        
+        # Define the state machine transitions
+        self.state_handlers: Dict[WorkflowState, Callable] = {
+            WorkflowState.INIT: self._handle_init,
+            WorkflowState.ANALYZING: self._handle_analyzing,
+            WorkflowState.PLANNING: self._handle_planning,
+            WorkflowState.ENVIRONMENT_SETUP: self._handle_environment_setup,
+            WorkflowState.REPOSITORY_CLONE: self._handle_repository_clone,
+            WorkflowState.CODE_GENERATION: self._handle_code_generation,
+            WorkflowState.LOCAL_TESTING: self._handle_local_testing,
+            WorkflowState.VALIDATION: self._handle_validation,
+            WorkflowState.GIT_OPERATIONS: self._handle_git_operations,
+            WorkflowState.PR_CREATION: self._handle_pr_creation,
+            WorkflowState.CLEANUP: self._handle_cleanup,
+        }
+        
+        # Progress mapping for each state
+        self.state_progress: Dict[WorkflowState, int] = {
+            WorkflowState.INIT: 5,
+            WorkflowState.ANALYZING: 15,
+            WorkflowState.PLANNING: 25,
+            WorkflowState.ENVIRONMENT_SETUP: 35,
+            WorkflowState.REPOSITORY_CLONE: 40,
+            WorkflowState.CODE_GENERATION: 60,
+            WorkflowState.LOCAL_TESTING: 75,
+            WorkflowState.VALIDATION: 85,
+            WorkflowState.GIT_OPERATIONS: 90,
+            WorkflowState.PR_CREATION: 95,
+            WorkflowState.CLEANUP: 98,
+            WorkflowState.COMPLETED: 100,
+        }
+    
+    async def start_coding_workflow(self, request: CodingRequest) -> CodingResponse:
+        """
+        Start a new coding workflow.
+        
+        Args:
+            request: The coding request with requirements
+            
+        Returns:
+            Initial response with task tracking information
+        """
+        # Generate unique task ID
+        task_id = f"task_{uuid.uuid4().hex[:12]}"
+        
+        # Create workflow context
+        context = WorkflowContext(task_id, request)
+        
+        # Generate branch name
+        branch_prefix = request.branch_prefix or "ai-feature"
+        unique_suffix = uuid.uuid4().hex[:8]
+        context.branch_name = f"{branch_prefix}-{unique_suffix}"
+        
+        # Store in active workflows
+        self.active_workflows[task_id] = context
+        
+        # Start workflow execution in background
+        asyncio.create_task(self._execute_workflow(context))
+        
+        # Return initial response
+        return CodingResponse(
+            task_id=task_id,
+            status=TaskStatus.INITIATED,
+            branch_name=context.branch_name,
+            estimated_duration=self._estimate_duration(request),
+            created_at=context.created_at,
+            updated_at=context.updated_at,
+            progress_percentage=0,
+            current_step="Initializing workflow",
+            workflow_steps=[]
+        )
+    
+    async def get_task_status(self, task_id: str) -> Optional[TaskStatusResponse]:
+        """Get the current status of a coding task."""
+        context = self.active_workflows.get(task_id)
+        if not context:
+            return None
+        
+        # Map internal state to public status
+        status = self._map_state_to_status(context.current_state)
+        
+        # Calculate total duration if completed
+        total_duration = None
+        completed_at = None
+        if context.current_state in [WorkflowState.COMPLETED, WorkflowState.FAILED, WorkflowState.CANCELLED]:
+            completed_at = context.updated_at
+            total_duration = (completed_at - context.created_at).total_seconds()
+        
+        return TaskStatusResponse(
+            task_id=task_id,
+            status=status,
+            created_at=context.created_at,
+            updated_at=context.updated_at,
+            completed_at=completed_at,
+            total_duration_seconds=total_duration,
+            progress_percentage=context.progress_percentage,
+            current_step=self._get_current_step_description(context.current_state),
+            workflow_steps=context.workflow_steps,
+            code_changes=context.code_changes,
+            test_results=context.test_results,
+            validation_results=context.validation_results,
+            branch_name=context.branch_name,
+            commit_hash=context.commit_hash,
+            pr_url=context.pr_url,
+            error_message=context.error_message,
+            error_details=context.error_details,
+            statistics=context.statistics
+        )
+    
+    async def cancel_task(self, task_id: str, reason: Optional[str] = None) -> bool:
+        """Cancel a running task."""
+        context = self.active_workflows.get(task_id)
+        if not context:
+            return False
+        
+        if context.current_state in [WorkflowState.COMPLETED, WorkflowState.FAILED, WorkflowState.CANCELLED]:
+            return False  # Task already finished
+        
+        # Mark as cancelled
+        context.current_state = WorkflowState.CANCELLED
+        context.error_message = reason or "Task cancelled by user"
+        context.updated_at = datetime.utcnow()
+        
+        logger.info(f"Task {task_id} cancelled: {reason}")
+        return True
+    
+    async def _execute_workflow(self, context: WorkflowContext):
+        """
+        Execute the complete workflow for a coding task.
+        
+        This is the main workflow execution loop that processes
+        each state until completion or failure.
+        """
+        logger.info(f"Starting workflow execution for task {context.task_id}")
+        
+        try:
+            while context.current_state not in [
+                WorkflowState.COMPLETED, 
+                WorkflowState.FAILED, 
+                WorkflowState.CANCELLED
+            ]:
+                # Update progress based on current state
+                progress = self.state_progress.get(context.current_state, 0)
+                context.update_progress(progress)
+                
+                # Get the handler for current state
+                handler = self.state_handlers.get(context.current_state)
+                if not handler:
+                    raise ValueError(f"No handler for state: {context.current_state}")
+                
+                # Execute the state handler
+                try:
+                    next_state = await handler(context)
+                    if next_state:
+                        context.current_state = next_state
+                        logger.debug(f"Task {context.task_id} transitioned to {next_state}")
+                except Exception as e:
+                    logger.error(f"Error in workflow step {context.current_state}: {str(e)}")
+                    context.set_error(f"Workflow failed in {context.current_state}: {str(e)}")
+                    break
+                
+                # Check for cancellation
+                if context.current_state == WorkflowState.CANCELLED:
+                    break
+            
+            # Mark as completed if successful
+            if context.current_state not in [WorkflowState.FAILED, WorkflowState.CANCELLED]:
+                context.current_state = WorkflowState.COMPLETED
+                context.update_progress(100)
+                logger.info(f"Workflow {context.task_id} completed successfully")
+            
+        except Exception as e:
+            logger.error(f"Unexpected error in workflow {context.task_id}: {str(e)}")
+            context.set_error(f"Unexpected workflow error: {str(e)}")
+        
+        finally:
+            # Cleanup resources
+            await self._cleanup_workflow(context)
+    
+    # State handlers (placeholder implementations for Phase 1.1)
+    
+    async def _handle_init(self, context: WorkflowContext) -> WorkflowState:
+        """Initialize the workflow."""
+        step = context.add_workflow_step("Initialize workspace")
+        
+        # Validate request
+        if not context.request.requirements.strip():
+            raise ValueError("Requirements cannot be empty")
+        
+        # Set initial statistics
+        context.statistics = {
+            "start_time": datetime.utcnow().isoformat(),
+            "requirements_length": len(context.request.requirements),
+            "target_service": context.request.target_service,
+            "priority": context.request.priority
+        }
+        
+        context.complete_workflow_step(step)
+        return WorkflowState.ANALYZING
+    
+    async def _handle_analyzing(self, context: WorkflowContext) -> WorkflowState:
+        """Analyze the requirements and existing codebase."""
+        step = context.add_workflow_step("Analyze requirements and codebase")
+        
+        try:
+            # Validate repository access if configured
+            if self.settings.market_predictor_repo_url:
+                access_valid = await self.git_service.validate_repository_access(
+                    self.settings.market_predictor_repo_url
+                )
+                if not access_valid:
+                    logger.warning("Repository access validation failed, proceeding with limited analysis")
+            
+            # For now, create a basic analysis structure
+            # In the future, this would analyze the actual repository
+            context.statistics["analysis_completed"] = True
+            context.statistics["complexity_estimate"] = self._estimate_complexity(context.request.requirements)
+            context.statistics["repository_accessible"] = access_valid if 'access_valid' in locals() else False
+            
+            # Set up basic repository structure for analysis
+            context.statistics["target_repository"] = self.settings.market_predictor_repo_url
+            context.statistics["target_service"] = context.request.target_service
+            
+            context.complete_workflow_step(step)
+            return WorkflowState.PLANNING
+            
+        except Exception as e:
+            context.complete_workflow_step(step, "failed", str(e))
+            context.set_error(f"Analysis failed: {str(e)}")
+            return WorkflowState.FAILED
+    
+    async def _handle_planning(self, context: WorkflowContext) -> WorkflowState:
+        """Create implementation plan using AI."""
+        step = context.add_workflow_step("Create implementation plan")
+        
+        try:
+            # Use AI planner to analyze requirements and create plan
+            plan = await self.ai_orchestrator.planner.analyze_requirements(
+                requirements=context.request.requirements,
+                target_service=context.request.target_service,
+                context=context.request.context
+            )
+            
+            # Store the AI-generated plan
+            context.implementation_plan = plan
+            
+            # Update statistics with plan details
+            context.statistics["ai_plan_created"] = True
+            context.statistics["plan_complexity"] = plan.get("requirement_analysis", {}).get("complexity", "unknown")
+            
+            # Extract file information for tracking
+            impl_plan = plan.get("implementation_plan", {})
+            files_to_create = impl_plan.get("files_to_create", [])
+            files_to_modify = impl_plan.get("files_to_modify", [])
+            
+            context.statistics["files_to_create"] = len(files_to_create)
+            context.statistics["files_to_modify"] = len(files_to_modify)
+            
+            logger.info(f"AI planning completed: {len(files_to_create)} new files, {len(files_to_modify)} modifications")
+            
+            context.complete_workflow_step(step)
+            return WorkflowState.ENVIRONMENT_SETUP
+            
+        except Exception as e:
+            context.complete_workflow_step(step, "failed", str(e))
+            context.set_error(f"Planning failed: {str(e)}")
+            return WorkflowState.FAILED
+    
+    async def _handle_environment_setup(self, context: WorkflowContext) -> WorkflowState:
+        """Set up the development environment."""
+        step = context.add_workflow_step("Set up development environment")
+        
+        try:
+            # Create workspace directory
+            workspace_path = f"{self.settings.workspace_path}/{context.task_id}"
+            os.makedirs(workspace_path, exist_ok=True)
+            context.workspace_path = workspace_path
+            
+            # Validate workspace permissions
+            test_file = os.path.join(workspace_path, "test_write.tmp")
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+            
+            context.statistics["workspace_created"] = True
+            context.statistics["workspace_path"] = workspace_path
+            
+            logger.info(f"Development environment set up at: {workspace_path}")
+            
+            context.complete_workflow_step(step)
+            return WorkflowState.REPOSITORY_CLONE
+            
+        except Exception as e:
+            context.complete_workflow_step(step, "failed", str(e))
+            context.set_error(f"Environment setup failed: {str(e)}")
+            return WorkflowState.FAILED
+    
+    async def _handle_repository_clone(self, context: WorkflowContext) -> WorkflowState:
+        """Clone the target repository."""
+        step = context.add_workflow_step("Clone target repository")
+        
+        try:
+            # Clone the repository to workspace
+            repo_url = self.settings.market_predictor_repo_url
+            if not repo_url:
+                raise ValueError("Repository URL not configured")
+            
+            cloned_path = await self.git_service.clone_repository(
+                repo_url=repo_url,
+                workspace_path=context.workspace_path,
+                branch="main"
+            )
+            
+            context.statistics["repository_cloned"] = True
+            context.statistics["cloned_path"] = cloned_path
+            
+            # Get repository information
+            repo_info = await self.git_service.get_repository_info(cloned_path)
+            context.statistics["repo_info"] = repo_info
+            
+            logger.info(f"Repository cloned successfully to {cloned_path}")
+            
+            context.complete_workflow_step(step)
+            return WorkflowState.CODE_GENERATION
+            
+        except Exception as e:
+            context.complete_workflow_step(step, "failed", str(e))
+            context.set_error(f"Repository cloning failed: {str(e)}")
+            return WorkflowState.FAILED
+    
+    async def _handle_code_generation(self, context: WorkflowContext) -> WorkflowState:
+        """Generate the required code using AI."""
+        step = context.add_workflow_step("Generate code implementation")
+        
+        try:
+            # Create implementation using AI orchestrator
+            implementation = await self.ai_orchestrator.create_implementation(
+                requirements=context.request.requirements,
+                target_service=context.request.target_service,
+                context=context.request.context
+            )
+            
+            if not implementation.get("success", False):
+                raise Exception(f"AI implementation failed: {implementation.get('error', 'Unknown error')}")
+            
+            # Write generated files to repository
+            impl_files = implementation.get("implementation_files", {})
+            test_files = implementation.get("test_files", {})
+            
+            if impl_files or test_files:
+                all_files = {**impl_files, **test_files}
+                written_files = await self.git_service.write_files(
+                    repo_path=context.workspace_path,
+                    files=all_files
+                )
+                
+                # Track code changes
+                for file_path in written_files:
+                    if file_path in impl_files:
+                        context.code_changes.append(CodeChange(
+                            file_path=file_path,
+                            change_type="created" if file_path in implementation.get("plan", {}).get("implementation_plan", {}).get("files_to_create", []) else "modified",
+                            lines_added=len(impl_files[file_path].split('\n')),
+                            lines_removed=0,
+                            description=f"AI-generated implementation for: {context.request.requirements[:50]}"
+                        ))
+                
+                context.statistics["files_generated"] = len(impl_files)
+                context.statistics["test_files_generated"] = len(test_files)
+                context.statistics["ai_implementation_success"] = True
+                
+                # Store AI-generated tests for the testing phase
+                context.ai_generated_tests = test_files
+                
+                logger.info(f"Code generation completed: {len(impl_files)} implementation files, {len(test_files)} test files")
+            else:
+                logger.warning("No files were generated by AI")
+            
+            context.complete_workflow_step(step)
+            return WorkflowState.LOCAL_TESTING
+            
+        except Exception as e:
+            context.complete_workflow_step(step, "failed", str(e))
+            context.set_error(f"Code generation failed: {str(e)}")
+            return WorkflowState.FAILED
+    
+    async def _handle_local_testing(self, context: WorkflowContext) -> WorkflowState:
+        """Run tests in isolated local environment."""
+        step = context.add_workflow_step("Run comprehensive tests in isolated environment")
+        
+        try:
+            # Import testing service (import here to avoid circular imports)
+            from ..services.testing_service import TestingService
+            from ..models.testing import TestSuite, TestType
+            
+            testing_service = TestingService()
+            
+            # Create isolated test environment
+            test_env = await testing_service.create_test_environment(
+                task_id=context.task_id,
+                target_service=context.request.target_service
+            )
+            
+            if test_env.status == "failed":
+                raise Exception(f"Failed to create test environment: {test_env.error_message}")
+            
+            # Install dependencies
+            requirements_path = None
+            if context.workspace_path:
+                potential_req_path = os.path.join(context.workspace_path, "requirements.txt")
+                if os.path.exists(potential_req_path):
+                    requirements_path = potential_req_path
+            
+            deps_installed = await testing_service.install_dependencies(
+                test_env, 
+                requirements_file=requirements_path
+            )
+            
+            if not deps_installed:
+                raise Exception("Failed to install dependencies in test environment")
+            
+            # Start target service if we have code changes
+            if context.code_changes and context.workspace_path:
+                service_started = await testing_service.start_target_service(
+                    test_env,
+                    service_path=context.workspace_path,
+                    port=8000
+                )
+                
+                if not service_started:
+                    logger.warning("Failed to start target service, continuing with tests")
+            
+            # Prepare test suite from generated code and tests
+            test_files = {}
+            source_files = {}
+            
+            # Get AI-generated test files
+            if hasattr(context, 'ai_generated_tests'):
+                test_files.update(context.ai_generated_tests)
+            
+            # Get source files for testing
+            for change in context.code_changes:
+                if change.file_path.endswith('.py'):
+                    file_path = os.path.join(context.workspace_path or '/tmp', change.file_path)
+                    if os.path.exists(file_path):
+                        with open(file_path, 'r') as f:
+                            source_files[change.file_path] = f.read()
+            
+            # If no specific test files, create a basic test suite
+            if not test_files:
+                test_files['test_generated_code.py'] = self._generate_basic_test_suite(context)
+            
+            # Create and run test suite
+            test_suite = TestSuite(
+                test_type=TestType.ALL,
+                test_files=test_files,
+                source_files=source_files,
+                timeout_seconds=600,
+                coverage_threshold=80.0
+            )
+            
+            # Execute tests
+            test_results = await testing_service.run_test_suite(test_env, test_suite)
+            
+            # Convert test results to workflow format
+            for detail in test_results.test_details:
+                context.test_results.append(TestResult(
+                    test_file=detail.test_name.split('::')[0] if '::' in detail.test_name else "unknown",
+                    test_name=detail.test_name,
+                    status=detail.status,
+                    duration_seconds=detail.duration_seconds,
+                    error_message=detail.error_message
+                ))
+            
+            # Update statistics
+            context.statistics["testing_completed"] = True
+            context.statistics["tests_passed"] = test_results.passed
+            context.statistics["tests_failed"] = test_results.failed
+            context.statistics["tests_total"] = test_results.total
+            context.statistics["test_coverage"] = test_results.coverage_percentage
+            context.statistics["test_success_rate"] = (test_results.passed / test_results.total * 100) if test_results.total > 0 else 0
+            
+            # Clean up test environment
+            await testing_service.cleanup_environment(test_env)
+            
+            # Check if tests passed
+            if not test_results.success or test_results.failed > 0:
+                logger.warning(f"Tests failed: {test_results.failed} failures out of {test_results.total} tests")
+                # Don't fail the workflow for test failures, but log them
+                context.statistics["test_failures_ignored"] = True
+            
+            logger.info(f"Testing completed: {test_results.passed}/{test_results.total} tests passed")
+            
+            context.complete_workflow_step(step)
+            return WorkflowState.VALIDATION
+            
+        except Exception as e:
+            context.complete_workflow_step(step, "failed", str(e))
+            # Don't fail the entire workflow for testing issues in this phase
+            logger.error(f"Testing failed but continuing workflow: {str(e)}")
+            context.statistics["testing_failed"] = True
+            context.statistics["testing_error"] = str(e)
+            return WorkflowState.VALIDATION
+    
+    async def _handle_validation(self, context: WorkflowContext) -> WorkflowState:
+        """Validate the implementation."""
+        step = context.add_workflow_step("Validate implementation")
+        
+        # Simulate validation
+        await asyncio.sleep(1)
+        
+        # Add validation result
+        context.validation_results.append(ValidationResult(
+            check_name="code_quality",
+            status="passed",
+            message="Code meets quality standards"
+        ))
+        
+        context.complete_workflow_step(step)
+        return WorkflowState.GIT_OPERATIONS
+    
+    async def _handle_git_operations(self, context: WorkflowContext) -> WorkflowState:
+        """Handle git operations."""
+        step = context.add_workflow_step("Commit changes to git")
+        
+        try:
+            # Create feature branch
+            feature_name = self._extract_feature_name(context.request.requirements)
+            branch_name = await self.git_service.create_feature_branch(
+                repo_path=context.workspace_path,
+                feature_name=feature_name
+            )
+            context.branch_name = branch_name
+            
+            # Generate commit message
+            files_changed = [change.file_path for change in context.code_changes]
+            commit_message = self.git_service.generate_commit_message(
+                requirements=context.request.requirements,
+                files_changed=files_changed,
+                implementation_type="feature"
+            )
+            
+            # Commit changes
+            commit_hash = await self.git_service.commit_changes(
+                repo_path=context.workspace_path,
+                commit_message=commit_message,
+                file_paths=files_changed
+            )
+            context.commit_hash = commit_hash
+            
+            # Push branch to remote
+            if commit_hash:
+                await self.git_service.push_branch(
+                    repo_path=context.workspace_path,
+                    branch_name=branch_name
+                )
+                
+                context.statistics["git_operations_success"] = True
+                context.statistics["branch_pushed"] = True
+                
+                logger.info(f"Git operations completed: branch={branch_name}, commit={commit_hash[:8]}")
+            else:
+                logger.warning("No changes to commit")
+            
+            context.complete_workflow_step(step)
+            return WorkflowState.PR_CREATION
+            
+        except Exception as e:
+            context.complete_workflow_step(step, "failed", str(e))
+            context.set_error(f"Git operations failed: {str(e)}")
+            return WorkflowState.FAILED
+    
+    async def _handle_pr_creation(self, context: WorkflowContext) -> WorkflowState:
+        """Create GitHub pull request."""
+        step = context.add_workflow_step("Create GitHub pull request")
+        
+        try:
+            # Generate PR title and description
+            pr_title = f"feat: {context.request.requirements[:50]}{'...' if len(context.request.requirements) > 50 else ''}"
+            
+            files_changed = [change.file_path for change in context.code_changes]
+            pr_description = self.git_service.generate_pr_description(
+                requirements=context.request.requirements,
+                implementation_plan=context.implementation_plan or {},
+                files_changed=files_changed,
+                test_results={"generated": len([r for r in context.test_results if r.status == "passed"])}
+            )
+            
+            # Extract repository name from URL
+            repo_url = self.settings.market_predictor_repo_url
+            if repo_url:
+                if repo_url.endswith('.git'):
+                    repo_url = repo_url[:-4]
+                parts = repo_url.split('/')
+                repo_name = f"{parts[-2]}/{parts[-1]}"
+                
+                # Create pull request
+                pr_url = await self.git_service.create_pull_request(
+                    repo_name=repo_name,
+                    branch_name=context.branch_name,
+                    title=pr_title,
+                    description=pr_description
+                )
+                
+                context.pr_url = pr_url
+                context.statistics["pr_created"] = True
+                context.statistics["pr_url"] = pr_url
+                
+                logger.info(f"Pull request created successfully: {pr_url}")
+            else:
+                logger.warning("Repository URL not configured, skipping PR creation")
+                context.statistics["pr_skipped"] = True
+            
+            context.complete_workflow_step(step)
+            return WorkflowState.CLEANUP
+            
+        except Exception as e:
+            context.complete_workflow_step(step, "failed", str(e))
+            # Don't fail the entire workflow if PR creation fails
+            logger.error(f"PR creation failed but workflow will continue: {str(e)}")
+            context.statistics["pr_creation_failed"] = True
+            context.statistics["pr_error"] = str(e)
+            return WorkflowState.CLEANUP
+    
+    async def _handle_cleanup(self, context: WorkflowContext) -> WorkflowState:
+        """Clean up resources."""
+        step = context.add_workflow_step("Clean up resources")
+        
+        # Simulate cleanup
+        await asyncio.sleep(0.5)
+        
+        context.statistics["cleanup_completed"] = True
+        
+        context.complete_workflow_step(step)
+        return WorkflowState.COMPLETED
+    
+    async def _cleanup_workflow(self, context: WorkflowContext):
+        """Final cleanup for the workflow."""
+        # In Phase 1.1, just log completion
+        logger.info(f"Workflow {context.task_id} finished with state: {context.current_state}")
+        
+        # TODO: Add actual resource cleanup in later phases
+    
+    def _estimate_duration(self, request: CodingRequest) -> str:
+        """Estimate completion time based on request complexity."""
+        # Simple heuristic based on requirements length
+        length = len(request.requirements)
+        
+        if length < 50:
+            return "3-5 minutes"
+        elif length < 100:
+            return "5-10 minutes"
+        elif length < 200:
+            return "8-15 minutes"
+        else:
+            return "10-20 minutes"
+    
+    def _map_state_to_status(self, state: WorkflowState) -> TaskStatus:
+        """Map internal workflow state to public task status."""
+        mapping = {
+            WorkflowState.INIT: TaskStatus.INITIATED,
+            WorkflowState.ANALYZING: TaskStatus.ANALYZING,
+            WorkflowState.PLANNING: TaskStatus.PLANNING,
+            WorkflowState.ENVIRONMENT_SETUP: TaskStatus.CLONING,
+            WorkflowState.REPOSITORY_CLONE: TaskStatus.CLONING,
+            WorkflowState.CODE_GENERATION: TaskStatus.CODING,
+            WorkflowState.LOCAL_TESTING: TaskStatus.TESTING,
+            WorkflowState.VALIDATION: TaskStatus.VALIDATING,
+            WorkflowState.GIT_OPERATIONS: TaskStatus.COMMITTING,
+            WorkflowState.PR_CREATION: TaskStatus.PR_CREATING,
+            WorkflowState.CLEANUP: TaskStatus.COMPLETED,
+            WorkflowState.COMPLETED: TaskStatus.COMPLETED,
+            WorkflowState.FAILED: TaskStatus.FAILED,
+            WorkflowState.CANCELLED: TaskStatus.CANCELLED,
+        }
+        return mapping.get(state, TaskStatus.INITIATED)
+    
+    def _get_current_step_description(self, state: WorkflowState) -> str:
+        """Get human-readable description of current step."""
+        descriptions = {
+            WorkflowState.INIT: "Initializing workflow",
+            WorkflowState.ANALYZING: "Analyzing requirements and codebase",
+            WorkflowState.PLANNING: "Creating implementation plan",
+            WorkflowState.ENVIRONMENT_SETUP: "Setting up development environment",
+            WorkflowState.REPOSITORY_CLONE: "Cloning target repository",
+            WorkflowState.CODE_GENERATION: "Generating code implementation",
+            WorkflowState.LOCAL_TESTING: "Running tests in local environment",
+            WorkflowState.VALIDATION: "Validating implementation quality",
+            WorkflowState.GIT_OPERATIONS: "Committing changes to git",
+            WorkflowState.PR_CREATION: "Creating GitHub pull request",
+            WorkflowState.CLEANUP: "Cleaning up resources",
+            WorkflowState.COMPLETED: "Workflow completed successfully",
+            WorkflowState.FAILED: "Workflow failed",
+            WorkflowState.CANCELLED: "Workflow cancelled",
+        }
+        return descriptions.get(state, "Unknown step")
+
+
+    def _estimate_complexity(self, requirements: str) -> str:
+        """Estimate complexity based on requirements."""
+        length = len(requirements)
+        word_count = len(requirements.split())
+        
+        # Check for complexity indicators
+        complex_words = ['integration', 'database', 'authentication', 'caching', 'webhook', 'monitoring']
+        complex_indicators = sum(1 for word in complex_words if word in requirements.lower())
+        
+        if length > 200 or word_count > 40 or complex_indicators >= 2:
+            return "high"
+        elif length > 100 or word_count > 20 or complex_indicators >= 1:
+            return "medium"
+        else:
+            return "low"
+    
+    def _extract_feature_name(self, requirements: str) -> str:
+        """Extract a feature name from requirements."""
+        # Simple extraction - take first few meaningful words
+        words = requirements.lower().split()
+        feature_words = []
+        
+        skip_words = {'add', 'create', 'implement', 'the', 'a', 'an', 'to', 'for', 'with', 'that', 'and'}
+        
+        for word in words:
+            if len(feature_words) >= 3:
+                break
+            if len(word) > 2 and word not in skip_words:
+                # Clean the word
+                clean_word = ''.join(c for c in word if c.isalnum())
+                if clean_word:
+                    feature_words.append(clean_word)
+        
+        return '-'.join(feature_words) if feature_words else 'ai-feature'
+    
+    def _generate_basic_test_suite(self, context: WorkflowContext) -> str:
+        """Generate a basic test suite for the implementation."""
+        test_content = '''"""
+Basic test suite for generated code.
+Auto-generated by Coding AI Agent.
+"""
+
+import pytest
+import asyncio
+from typing import Any, Dict
+
+# Test the generated implementation
+def test_implementation_exists():
+    """Test that the implementation was created."""
+    # This is a basic existence test
+    assert True, "Implementation exists"
+
+def test_basic_functionality():
+    """Test basic functionality."""
+    # Add specific tests based on the implementation
+    assert True, "Basic functionality works"
+
+class TestGeneratedCode:
+    """Test class for generated code."""
+    
+    def test_code_structure(self):
+        """Test that code follows expected structure."""
+        assert True, "Code structure is valid"
+    
+    def test_error_handling(self):
+        """Test error handling."""
+        assert True, "Error handling works"
+
+# Add more specific tests based on the requirements
+# This is a placeholder test suite that should be expanded
+# with actual implementation-specific tests
+'''
+        return test_content

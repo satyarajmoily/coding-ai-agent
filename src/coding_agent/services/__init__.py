@@ -1,0 +1,1 @@
+"""External service integrations for Git, GitHub, Docker, and LLM operations."""
