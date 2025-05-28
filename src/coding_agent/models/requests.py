@@ -59,11 +59,12 @@ class CodingRequest(BaseModel):
         example="This endpoint will be used by monitoring systems, ensure it's fast and reliable"
     )
     
-    branch_prefix: Optional[str] = Field(
-        default=None,
-        description="Custom prefix for the git branch name",
-        max_length=50,
-        pattern=r"^[a-zA-Z0-9-_]+$"
+    default_branch: str = Field(
+        default="main",
+        description="Default branch name to create PR against",
+        max_length=100,
+        pattern=r"^[a-zA-Z0-9-_/]+$",
+        example="main"
     )
     
     skip_tests: bool = Field(
@@ -116,13 +117,13 @@ class CodingRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "requirements": "Add a /api/v1/status endpoint that returns current timestamp, service uptime, and health status",
+                "default_branch": "master",
+                "context": "This endpoint will be used to add two numbers",
+                "dry_run": False,
                 "priority": "medium",
-                "target_service": "market-predictor",
-                "context": "This endpoint will be used by monitoring systems and load balancers",
-                "branch_prefix": "status-endpoint",
+                "requirements": "Add a /api/v1/add endpoint that returns current timestamp, and the result of adding any two numbers",
                 "skip_tests": False,
-                "dry_run": False
+                "target_service": "market-predictor"
             }
         }
 

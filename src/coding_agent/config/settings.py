@@ -35,13 +35,10 @@ class Settings(BaseSettings):
     
     # GitHub settings
     github_token: Optional[str] = Field(default=None, description="GitHub personal access token")
-    github_repository: Optional[str] = Field(default=None, description="Default GitHub repository")
     github_base_url: str = Field(default="https://api.github.com", description="GitHub API base URL")
-    allowed_repositories: List[str] = Field(default_factory=list, description="Allowed repositories for operations")
     
     # Git settings
     workspace_base_path: str = Field(default="/tmp/coding-agent-workspaces", description="Base path for workspaces")
-    market_predictor_repo_url: str = Field(default="", description="Market predictor repository URL")
     git_user_name: str = Field(default="Coding AI Agent", description="Git user name for commits")
     git_user_email: str = Field(default="coding-agent@autonomous-trading.com", description="Git user email")
     
@@ -83,14 +80,6 @@ class Settings(BaseSettings):
             raise ValueError("Workspace base path must be absolute")
         return v
     
-    @validator("allowed_repositories")
-    def validate_repositories(cls, v):
-        """Validate repository format."""
-        for repo in v:
-            if "/" not in repo or len(repo.split("/")) != 2:
-                raise ValueError(f"Repository '{repo}' must be in format 'owner/repo'")
-        return v
-    
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""
@@ -124,12 +113,6 @@ class Settings(BaseSettings):
         
         if not self.github_token:
             missing.append("GITHUB_TOKEN")
-        
-        if not self.github_repository:
-            missing.append("GITHUB_REPOSITORY")
-        
-        if not self.market_predictor_repo_url:
-            missing.append("MARKET_PREDICTOR_REPO_URL")
         
         return missing
     

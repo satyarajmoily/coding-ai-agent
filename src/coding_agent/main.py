@@ -74,7 +74,6 @@ async def lifespan(app: FastAPI):
         app_start_time = datetime.utcnow()
         
         logger.info(f"✅ Coding AI Agent started successfully on {settings.api_host}:{settings.api_port}")
-        logger.info(f"🎯 Target service: {settings.github_repository}")
         logger.info(f"🔧 LLM provider: {settings.llm_provider} ({settings.llm_model})")
         
         yield
@@ -244,10 +243,10 @@ async def health_check(request: HealthCheckRequest = Depends()):
             overall_status = "degraded"
         
         # Check GitHub configuration
-        if settings.github_token and settings.github_repository:
-            dependencies["github"] = {"status": "configured", "repository": settings.github_repository}
+        if settings.github_token:
+            dependencies["github"] = {"status": "configured", "note": "repositories are dynamic per request"}
         else:
-            dependencies["github"] = {"status": "not_configured", "error": "Missing GitHub configuration"}
+            dependencies["github"] = {"status": "not_configured", "error": "Missing GitHub token"}
             overall_status = "degraded"
         
         # Check workspace

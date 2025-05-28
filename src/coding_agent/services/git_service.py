@@ -82,13 +82,14 @@ class GitService:
             logger.error(f"Error cloning repository: {str(e)}")
             raise Exception(f"Failed to clone repository: {str(e)}")
     
-    async def create_feature_branch(self, repo_path: str, feature_name: str) -> str:
+    async def create_feature_branch(self, repo_path: str, feature_name: str, base_branch: str = "main") -> str:
         """
         Create a new feature branch with unique identifier.
         
         Args:
             repo_path: Path to the local repository
             feature_name: Base name for the feature branch
+            base_branch: The base branch to create the feature branch from
             
         Returns:
             Name of the created branch
@@ -96,14 +97,27 @@ class GitService:
         try:
             repo = Repo(repo_path)
             
-            # Ensure we're on the main branch and it's up to date
-            if repo.active_branch.name != "main":
-                main_branch = repo.heads.main
-                main_branch.checkout()
+            # Ensure we're on the correct base branch and it's up to date
+            if repo.active_branch.name != base_branch:
+                try:
+                    # Try to get the base branch from local branches
+                    if base_branch in [branch.name for branch in repo.heads]:
+                        # Branch exists locally, check it out
+                        repo.git.checkout(base_branch)
+                    else:
+                        # If base branch doesn't exist locally, try to get from remote
+                        origin = repo.remotes.origin
+                        remote_ref = f"origin/{base_branch}"
+                        repo.git.checkout('-b', base_branch, remote_ref)
+                except Exception as e:
+                    logger.warning(f"Could not checkout {base_branch}, staying on current branch: {str(e)}")
             
             # Pull latest changes
             origin = repo.remotes.origin
-            origin.pull()
+            try:
+                origin.pull()
+            except Exception as e:
+                logger.warning(f"Could not pull latest changes: {str(e)}")
             
             # Generate unique branch name
             unique_id = uuid.uuid4().hex[:8]
@@ -113,7 +127,7 @@ class GitService:
             new_branch = repo.create_head(branch_name)
             new_branch.checkout()
             
-            logger.info(f"Created feature branch: {branch_name}")
+            logger.info(f"Created feature branch: {branch_name} from {base_branch}")
             return branch_name
             
         except Exception as e:
