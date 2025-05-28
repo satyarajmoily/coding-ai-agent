@@ -865,13 +865,19 @@ class WorkflowEngine:
             target_service: The target service name (e.g., "market-predictor")
             
         Returns:
-            Complete GitHub repository URL
+            Complete GitHub repository URL with authentication
         """
-        # Extract GitHub username from the token or configuration
-        github_username = "satyarajmoily"  # This could be extracted from GitHub API if needed
+        # Get GitHub credentials from settings
+        github_username = self.settings.github_username
+        github_token = self.settings.github_token
         
-        # Construct the repository URL
-        repo_url = f"https://github.com/{github_username}/{target_service}.git"
+        # Construct authenticated repository URL
+        if github_token:
+            # Use token authentication for HTTPS
+            repo_url = f"https://{github_username}:{github_token}@github.com/{github_username}/{target_service}.git"
+        else:
+            # Fallback to regular HTTPS (may fail on push)
+            repo_url = f"https://github.com/{github_username}/{target_service}.git"
         
         return repo_url
     

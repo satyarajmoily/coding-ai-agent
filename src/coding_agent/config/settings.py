@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     
     # GitHub settings
     github_token: Optional[str] = Field(default=None, description="GitHub personal access token")
+    github_username: str = Field(default="satyarajmoily", description="GitHub username")
     github_base_url: str = Field(default="https://api.github.com", description="GitHub API base URL")
     
     # Git settings
