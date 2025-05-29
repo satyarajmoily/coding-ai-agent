@@ -61,12 +61,13 @@ class PlannerAgent:
         self.settings = get_settings()
         self.callback_handler = CodingCallbackHandler()
         
-        # Initialize the LLM
+        # Initialize the LLM with proper configuration from settings
         self.llm = ChatOpenAI(
-            model_name=self.settings.llm_model,
+            model=self.settings.llm_model,
             temperature=self.settings.llm_temperature,
             max_tokens=self.settings.llm_max_tokens,
-            openai_api_key=self.settings.openai_api_key,
+            timeout=self.settings.llm_timeout,
+            api_key=self.settings.openai_api_key,
             callbacks=[self.callback_handler]
         )
         
@@ -193,12 +194,13 @@ class CoderAgent:
         self.settings = get_settings()
         self.callback_handler = CodingCallbackHandler()
         
-        # Initialize the LLM
+        # Initialize the LLM with proper configuration from settings
         self.llm = ChatOpenAI(
-            model_name=self.settings.llm_model,
+            model=self.settings.llm_model,
             temperature=self.settings.llm_temperature,
             max_tokens=self.settings.llm_max_tokens,
-            openai_api_key=self.settings.openai_api_key,
+            timeout=self.settings.llm_timeout,
+            api_key=self.settings.openai_api_key,
             callbacks=[self.callback_handler]
         )
         
@@ -294,12 +296,13 @@ class TesterAgent:
         self.settings = get_settings()
         self.callback_handler = CodingCallbackHandler()
         
-        # Initialize the LLM
+        # Initialize the LLM with proper configuration from settings
         self.llm = ChatOpenAI(
-            model_name=self.settings.llm_model,
+            model=self.settings.llm_model,
             temperature=self.settings.llm_temperature,
             max_tokens=self.settings.llm_max_tokens,
-            openai_api_key=self.settings.openai_api_key,
+            timeout=self.settings.llm_timeout,
+            api_key=self.settings.openai_api_key,
             callbacks=[self.callback_handler]
         )
         

@@ -168,19 +168,19 @@ class CentralizedConfig:
             return {
                 'openai_api_key': os.getenv('OPENAI_API_KEY', llm_config.get('openai_api_key', '')),
                 'anthropic_api_key': os.getenv('ANTHROPIC_API_KEY', llm_config.get('anthropic_api_key', '')),
-                'provider': llm_config.get('provider', 'openai'),
-                'model': llm_config.get('model', 'gpt-4'),
-                'temperature': llm_config.get('temperature', 0.1),
-                'max_tokens': llm_config.get('max_tokens', 4000),
-                'timeout': llm_config.get('timeout', 60)
+                'provider': llm_config.get('provider', os.getenv('LLM_PROVIDER', 'openai')),
+                'model': llm_config.get('model', os.getenv('LLM_MODEL', 'gpt-4o')),
+                'temperature': llm_config.get('temperature', float(os.getenv('LLM_TEMPERATURE', '0.1'))),
+                'max_tokens': llm_config.get('max_tokens', int(os.getenv('LLM_MAX_TOKENS', '4000'))),
+                'timeout': llm_config.get('timeout', int(os.getenv('LLM_TIMEOUT', '60')))
             }
         
-        # Fall back to environment variables
+        # Fall back to environment variables (set by agents.yml)
         return {
             'openai_api_key': os.getenv('OPENAI_API_KEY', ''),
             'anthropic_api_key': os.getenv('ANTHROPIC_API_KEY', ''),
             'provider': os.getenv('LLM_PROVIDER', 'openai'),
-            'model': os.getenv('LLM_MODEL', 'gpt-4'),
+            'model': os.getenv('LLM_MODEL', 'gpt-4o'),
             'temperature': float(os.getenv('LLM_TEMPERATURE', '0.1')),
             'max_tokens': int(os.getenv('LLM_MAX_TOKENS', '4000')),
             'timeout': int(os.getenv('LLM_TIMEOUT', '60'))

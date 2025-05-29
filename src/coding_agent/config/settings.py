@@ -10,6 +10,9 @@ from pydantic import Field, validator
 from pydantic_settings import BaseSettings
 import os
 
+# Import our new config loader
+from .agents_config_loader import get_agent_llm_config
+
 
 class Settings(BaseSettings):
     """
@@ -25,13 +28,14 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8002, description="API port")
     debug_mode: bool = Field(default=True, description="Enable debug mode")
     
-    # LLM settings
+    # LLM settings - NO DEFAULTS! All values from agents.yml
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
     anthropic_api_key: Optional[str] = Field(default=None, description="Anthropic API key")
-    llm_provider: str = Field(default="openai", description="LLM provider: openai, anthropic")
-    llm_model: str = Field(default="gpt-4", description="LLM model to use")
-    llm_temperature: float = Field(default=0.1, description="LLM temperature (0-1)")
-    llm_max_tokens: int = Field(default=4000, description="Maximum tokens per LLM request")
+    llm_provider: Optional[str] = Field(default=None, description="LLM provider (from agents.yml)")
+    llm_model: Optional[str] = Field(default=None, description="LLM model name (from agents.yml)")
+    llm_temperature: Optional[float] = Field(default=None, description="LLM temperature (from agents.yml)")
+    llm_max_tokens: Optional[int] = Field(default=None, description="Maximum tokens (from agents.yml)")
+    llm_timeout: Optional[int] = Field(default=None, description="LLM timeout (from agents.yml)")
     
     # GitHub settings
     github_token: Optional[str] = Field(default=None, description="GitHub personal access token")
@@ -67,10 +71,29 @@ class Settings(BaseSettings):
     cors_origins: List[str] = Field(default=["*"], description="CORS allowed origins")
     request_timeout: int = Field(default=300, description="API request timeout in seconds")
     
+    def __init__(self, **kwargs):
+        """Initialize settings with LLM config from agents.yml."""
+        super().__init__(**kwargs)
+        
+        # Load LLM configuration from agents.yml - SINGLE SOURCE OF TRUTH
+        try:
+            agent_llm_config = get_agent_llm_config('coding-ai-agent')
+            
+            # Set LLM settings from agents.yml - NO FALLBACKS
+            self.llm_provider = agent_llm_config['provider']
+            self.llm_model = agent_llm_config['model']
+            self.llm_temperature = agent_llm_config['temperature']
+            self.llm_max_tokens = agent_llm_config['max_tokens']
+            self.llm_timeout = agent_llm_config['timeout']
+            
+        except Exception as e:
+            # FAIL FAST - No fallbacks, no defaults
+            raise RuntimeError(f"❌ CRITICAL: Cannot load LLM configuration from agents.yml: {e}")
+    
     @validator("llm_temperature")
     def validate_temperature(cls, v):
         """Validate LLM temperature is between 0 and 1."""
-        if not 0 <= v <= 1:
+        if v is not None and not 0 <= v <= 1:
             raise ValueError("LLM temperature must be between 0 and 1")
         return v
     
