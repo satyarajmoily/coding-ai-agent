@@ -10,8 +10,8 @@ from pydantic import Field, validator
 from pydantic_settings import BaseSettings
 import os
 
-# Import our new config loader
-from .agents_config_loader import get_agent_llm_config
+# Import simple config
+from .simple_config import get_config
 
 
 class Settings(BaseSettings):
@@ -72,23 +72,24 @@ class Settings(BaseSettings):
     request_timeout: int = Field(default=300, description="API request timeout in seconds")
     
     def __init__(self, **kwargs):
-        """Initialize settings with LLM config from agents.yml."""
+        """Initialize settings with LLM config from .env file."""
         super().__init__(**kwargs)
         
-        # Load LLM configuration from agents.yml - SINGLE SOURCE OF TRUTH
+        # Load LLM configuration from .env file
         try:
-            agent_llm_config = get_agent_llm_config('coding-ai-agent')
+            config = get_config()
+            llm_config = config.get_llm_config()
             
-            # Set LLM settings from agents.yml - NO FALLBACKS
-            self.llm_provider = agent_llm_config['provider']
-            self.llm_model = agent_llm_config['model']
-            self.llm_temperature = agent_llm_config['temperature']
-            self.llm_max_tokens = agent_llm_config['max_tokens']
-            self.llm_timeout = agent_llm_config['timeout']
+            # Set LLM settings from .env file
+            self.llm_provider = llm_config['provider']
+            self.llm_model = llm_config['model']
+            self.llm_temperature = llm_config['temperature']
+            self.llm_max_tokens = llm_config['max_tokens']
+            self.llm_timeout = llm_config['timeout']
             
         except Exception as e:
             # FAIL FAST - No fallbacks, no defaults
-            raise RuntimeError(f"❌ CRITICAL: Cannot load LLM configuration from agents.yml: {e}")
+            raise RuntimeError(f"❌ CRITICAL: Cannot load LLM configuration from .env file: {e}")
     
     @validator("llm_temperature")
     def validate_temperature(cls, v):
