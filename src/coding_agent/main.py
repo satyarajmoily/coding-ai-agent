@@ -19,7 +19,7 @@ from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from contextlib import asynccontextmanager
 import uvicorn
 
@@ -181,6 +181,7 @@ async def root():
             "coding": "/api/v1/code",
             "status": "/api/v1/code/{task_id}/status",
             "health": "/health",
+            "metrics": "/metrics",
             "docs": "/docs"
         },
         "capabilities": [
@@ -280,6 +281,46 @@ async def health_check(request: HealthCheckRequest = Depends()):
         version="1.0.0",
         uptime_seconds=uptime
     )
+
+
+@app.get("/metrics",
+    summary="Prometheus Metrics",
+    description="Prometheus metrics endpoint for service monitoring",
+    response_class=Response,
+    tags=["monitoring"]
+)
+async def get_metrics():
+    """
+    Prometheus metrics endpoint.
+    Returns service health and basic metrics in Prometheus format.
+    """
+    global app_start_time
+    
+    current_time = datetime.utcnow()
+    uptime = (current_time - app_start_time).total_seconds() if app_start_time else 0
+    active_workflows = len(workflow_engine.active_workflows) if workflow_engine else 0
+    
+    # Prometheus format metrics
+    metrics = [
+        "# HELP up Service availability (1 = up, 0 = down)",
+        "# TYPE up gauge",
+        "up 1",
+        "",
+        "# HELP coding_agent_uptime_seconds Service uptime in seconds",
+        "# TYPE coding_agent_uptime_seconds counter",
+        f"coding_agent_uptime_seconds {uptime}",
+        "",
+        "# HELP coding_agent_active_workflows Number of active coding workflows",
+        "# TYPE coding_agent_active_workflows gauge", 
+        f"coding_agent_active_workflows {active_workflows}",
+        "",
+        "# HELP coding_agent_info Service information",
+        "# TYPE coding_agent_info gauge",
+        'coding_agent_info{version="1.0.0",service="coding-ai-agent"} 1',
+        ""
+    ]
+    
+    return Response(content="\n".join(metrics), media_type="text/plain")
 
 
 @app.post("/api/v1/code",
