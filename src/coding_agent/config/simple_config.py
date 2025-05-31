@@ -48,7 +48,7 @@ class SimpleConfig:
             # LLM settings
             'llm': {
                 'provider': os.getenv('LLM_PROVIDER', 'openai'),
-                'model': os.getenv('LLM_MODEL', 'gpt-4'),
+                'model': os.getenv('LLM_MODEL', 'gpt-4.1-nano-2025-04-14'),
                 'temperature': float(os.getenv('LLM_TEMPERATURE', '0.1')),
                 'max_tokens': int(os.getenv('LLM_MAX_TOKENS', '4000')),
                 'timeout': int(os.getenv('LLM_TIMEOUT', '60')),
