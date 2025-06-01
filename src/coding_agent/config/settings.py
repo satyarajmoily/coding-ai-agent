@@ -1,114 +1,86 @@
 """
 Configuration management for the Coding AI Agent.
 
-Handles all environment variables, API keys, and system configuration
-using strict .env file loading with no defaults.
+Clean Pydantic BaseSettings implementation that loads all configuration
+from .env file with proper validation and type conversion.
 """
 
 from typing import List, Optional
-from pydantic import Field, validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 import os
-
-# Import strict config
-from .simple_config import get_config
+from pathlib import Path
 
 
 class Settings(BaseSettings):
     """
-    Strict settings for the Coding AI Agent.
+    Clean settings for the Coding AI Agent.
     
-    All settings must be provided via .env file - NO DEFAULTS in code.
+    All settings loaded from .env file with proper Pydantic validation.
     """
     
-    # Application settings - NO DEFAULTS
+    # Application settings
     environment: str = Field(description="Environment: development, staging, production")
     log_level: str = Field(description="Logging level")
-    api_host: str = Field(description="API host address")
-    api_port: int = Field(description="API port")
     debug_mode: bool = Field(description="Enable debug mode")
     
-    # LLM settings - NO DEFAULTS! All values from .env file
+    # Agent settings
+    agent_name: str = Field(description="Agent name")
+    agent_port: int = Field(description="Agent port", alias="AGENT_PORT")
+    service_name: str = Field(description="Service name")
+    service_version: str = Field(description="Service version")
+    
+    # LLM settings
+    llm_provider: str = Field(description="LLM provider")
+    llm_model: str = Field(description="LLM model name")
+    llm_temperature: float = Field(description="LLM temperature")
+    llm_max_tokens: int = Field(description="Maximum tokens")
+    llm_timeout: int = Field(description="LLM timeout")
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
     anthropic_api_key: Optional[str] = Field(default=None, description="Anthropic API key")
-    llm_provider: Optional[str] = Field(default=None, description="LLM provider (from .env)")
-    llm_model: Optional[str] = Field(default=None, description="LLM model name (from .env)")
-    llm_temperature: Optional[float] = Field(default=None, description="LLM temperature (from .env)")
-    llm_max_tokens: Optional[int] = Field(default=None, description="Maximum tokens (from .env)")
-    llm_timeout: Optional[int] = Field(default=None, description="LLM timeout (from .env)")
     
-    # GitHub settings - NO DEFAULTS
-    github_token: Optional[str] = Field(default=None, description="GitHub personal access token")
-    github_username: str = Field(description="GitHub username")
-    github_email: str = Field(description="GitHub email")
-    
-    # Workspace settings - NO DEFAULTS
+    # Workspace settings
     workspace_base_path: str = Field(description="Base path for workspaces")
     max_concurrent_tasks: int = Field(description="Maximum concurrent tasks")
     workflow_timeout: int = Field(description="Workflow timeout in seconds")
     testing_timeout: int = Field(description="Testing timeout in seconds")
     
-    # Target repositories - NO DEFAULTS
-    target_repositories: List[str] = Field(description="List of target repositories")
+    # GitHub settings
+    github_user_name: str = Field(description="GitHub username")
+    github_user_email: str = Field(description="GitHub email")
+    github_token: str = Field(description="GitHub personal access token")
+    target_repositories_raw: str = Field(description="Comma-separated list of target repositories", alias="TARGET_REPOSITORIES")
     
-    def __init__(self, **kwargs):
-        """Initialize settings with strict config from .env file."""
-        super().__init__(**kwargs)
-        
-        # Load configuration from .env file using strict config
-        try:
-            config = get_config()
-            
-            # Set all values from .env file
-            self.environment = config.get('environment')
-            self.log_level = config.get('log_level')
-            self.debug_mode = config.get('debug_mode')
-            
-            # Agent settings
-            agent_config = config.get_agent_config()
-            self.api_host = "0.0.0.0"  # Standard for containers
-            self.api_port = agent_config['port']
-            
-            # LLM settings from .env file
-            llm_config = config.get_llm_config()
-            self.llm_provider = llm_config['provider']
-            self.llm_model = llm_config['model']
-            self.llm_temperature = llm_config['temperature']
-            self.llm_max_tokens = llm_config['max_tokens']
-            self.llm_timeout = llm_config['timeout']
-            self.openai_api_key = llm_config['api_key']
-            
-            # Workspace settings
-            workspace_config = config.get_workspace_config()
-            self.workspace_base_path = workspace_config['base_path']
-            self.max_concurrent_tasks = workspace_config['max_concurrent_tasks']
-            self.workflow_timeout = workspace_config['workflow_timeout']
-            self.testing_timeout = workspace_config['testing_timeout']
-            
-            # GitHub settings
-            github_config = config.get_github_config()
-            self.github_username = github_config['user_name']
-            self.github_email = github_config['user_email']
-            self.github_token = github_config['token']
-            self.target_repositories = github_config['target_repositories']
-            
-        except Exception as e:
-            # FAIL FAST - No fallbacks, no defaults
-            raise RuntimeError(f"❌ CRITICAL: Cannot load configuration from .env file: {e}")
+    # CORS settings
+    cors_origins_raw: str = Field(description="Comma-separated list of CORS origins", alias="CORS_ORIGINS")
     
-    @validator("llm_temperature")
+    # Computed properties
+    api_host: str = Field(default="0.0.0.0", description="API host address")
+    
+    @field_validator("llm_temperature")
+    @classmethod
     def validate_temperature(cls, v):
         """Validate LLM temperature is between 0 and 1."""
-        if v is not None and not 0 <= v <= 1:
+        if not 0 <= v <= 1:
             raise ValueError("LLM temperature must be between 0 and 1")
         return v
     
-    @validator("workspace_base_path")
+    @field_validator("workspace_base_path")
+    @classmethod
     def validate_workspace_path(cls, v):
         """Ensure workspace base path is absolute."""
         if not os.path.isabs(v):
             raise ValueError("Workspace base path must be absolute")
         return v
+    
+    @model_validator(mode='after')
+    def validate_llm_config(self):
+        """Validate LLM configuration is complete."""
+        if self.llm_provider == 'openai' and not self.openai_api_key:
+            raise ValueError("OpenAI API key is required when using OpenAI provider")
+        elif self.llm_provider == 'anthropic' and not self.anthropic_api_key:
+            raise ValueError("Anthropic API key is required when using Anthropic provider")
+        return self
     
     @property
     def is_development(self) -> bool:
@@ -125,6 +97,40 @@ class Settings(BaseSettings):
         """Get the workspace path, creating it if it doesn't exist."""
         os.makedirs(self.workspace_base_path, exist_ok=True)
         return self.workspace_base_path
+    
+    @property
+    def target_repositories_list(self) -> List[str]:
+        """Get target repositories as a list."""
+        return [repo.strip() for repo in self.target_repositories_raw.split(',') if repo.strip()]
+    
+    @property
+    def cors_origins_list(self) -> List[str]:
+        """Get CORS origins as a list."""
+        if self.cors_origins_raw == "*":
+            return ["*"]
+        return [origin.strip() for origin in self.cors_origins_raw.split(',') if origin.strip()]
+    
+    # Compatibility properties for existing code
+    @property
+    def github_username(self) -> str:
+        return self.github_user_name
+    
+    @property
+    def github_email(self) -> str:
+        return self.github_user_email
+    
+    @property
+    def api_port(self) -> int:
+        return self.agent_port
+    
+    @property
+    def cors_origins(self) -> List[str]:
+        return self.cors_origins_list
+    
+    # For backward compatibility - provide target_repositories as list
+    @property
+    def target_repositories(self) -> List[str]:
+        return self.target_repositories_list
     
     def validate_required_settings(self) -> List[str]:
         """
@@ -147,10 +153,12 @@ class Settings(BaseSettings):
         return missing
     
     class Config:
-        env_file = ".env"
+        # Proper .env file path resolution for container environment
+        env_file = Path(__file__).parent.parent.parent.parent / ".env"
         case_sensitive = False
-        env_prefix = ""
-        extra = "ignore"  # Allow extra fields from .env
+        extra = "ignore"
+        
+        # Field aliases are defined in Field(alias=...) above
 
 
 # Global settings instance
