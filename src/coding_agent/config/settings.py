@@ -2,7 +2,7 @@
 Configuration management for the Coding AI Agent.
 
 Handles all environment variables, API keys, and system configuration
-using Pydantic settings with validation and type safety.
+using strict .env file loading with no defaults.
 """
 
 from typing import List, Optional
@@ -10,86 +10,91 @@ from pydantic import Field, validator
 from pydantic_settings import BaseSettings
 import os
 
-# Import simple config
+# Import strict config
 from .simple_config import get_config
 
 
 class Settings(BaseSettings):
     """
-    Comprehensive settings for the Coding AI Agent.
+    Strict settings for the Coding AI Agent.
     
-    All settings can be overridden via environment variables.
+    All settings must be provided via .env file - NO DEFAULTS in code.
     """
     
-    # Application settings
-    environment: str = Field(default="development", description="Environment: development, staging, production")
-    log_level: str = Field(default="INFO", description="Logging level")
-    api_host: str = Field(default="0.0.0.0", description="API host address")
-    api_port: int = Field(default=8002, description="API port")
-    debug_mode: bool = Field(default=True, description="Enable debug mode")
+    # Application settings - NO DEFAULTS
+    environment: str = Field(description="Environment: development, staging, production")
+    log_level: str = Field(description="Logging level")
+    api_host: str = Field(description="API host address")
+    api_port: int = Field(description="API port")
+    debug_mode: bool = Field(description="Enable debug mode")
     
-    # LLM settings - NO DEFAULTS! All values from agents.yml
+    # LLM settings - NO DEFAULTS! All values from .env file
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
     anthropic_api_key: Optional[str] = Field(default=None, description="Anthropic API key")
-    llm_provider: Optional[str] = Field(default=None, description="LLM provider (from agents.yml)")
-    llm_model: Optional[str] = Field(default=None, description="LLM model name (from agents.yml)")
-    llm_temperature: Optional[float] = Field(default=None, description="LLM temperature (from agents.yml)")
-    llm_max_tokens: Optional[int] = Field(default=None, description="Maximum tokens (from agents.yml)")
-    llm_timeout: Optional[int] = Field(default=None, description="LLM timeout (from agents.yml)")
+    llm_provider: Optional[str] = Field(default=None, description="LLM provider (from .env)")
+    llm_model: Optional[str] = Field(default=None, description="LLM model name (from .env)")
+    llm_temperature: Optional[float] = Field(default=None, description="LLM temperature (from .env)")
+    llm_max_tokens: Optional[int] = Field(default=None, description="Maximum tokens (from .env)")
+    llm_timeout: Optional[int] = Field(default=None, description="LLM timeout (from .env)")
     
-    # GitHub settings
+    # GitHub settings - NO DEFAULTS
     github_token: Optional[str] = Field(default=None, description="GitHub personal access token")
-    github_username: str = Field(default="satyarajmoily", description="GitHub username")
-    github_base_url: str = Field(default="https://api.github.com", description="GitHub API base URL")
+    github_username: str = Field(description="GitHub username")
+    github_email: str = Field(description="GitHub email")
     
-    # Git settings
-    workspace_base_path: str = Field(default="/tmp/coding-agent-workspaces", description="Base path for workspaces")
-    git_user_name: str = Field(default="Coding AI Agent", description="Git user name for commits")
-    git_user_email: str = Field(default="coding-agent@autonomous-trading.com", description="Git user email")
+    # Workspace settings - NO DEFAULTS
+    workspace_base_path: str = Field(description="Base path for workspaces")
+    max_concurrent_tasks: int = Field(description="Maximum concurrent tasks")
+    workflow_timeout: int = Field(description="Workflow timeout in seconds")
+    testing_timeout: int = Field(description="Testing timeout in seconds")
     
-    # Workflow settings
-    workflow_timeout: int = Field(default=1800, description="Workflow timeout in seconds (30 minutes)")
-    testing_timeout: int = Field(default=600, description="Testing timeout in seconds (10 minutes)")
-    max_concurrent_tasks: int = Field(default=3, description="Maximum concurrent coding tasks")
-    cleanup_workspaces: bool = Field(default=True, description="Cleanup workspaces after completion")
-    
-    # Security settings
-    enable_sandboxing: bool = Field(default=True, description="Enable sandboxed execution")
-    max_workspace_size: str = Field(default="1GB", description="Maximum workspace size")
-    allowed_file_types: List[str] = Field(
-        default=[".py", ".md", ".txt", ".json", ".yml", ".yaml", ".toml"],
-        description="Allowed file types for modification"
-    )
-    
-    # Docker settings
-    docker_socket_path: str = Field(default="/var/run/docker.sock", description="Docker socket path")
-    docker_image_base: str = Field(default="python:3.9-slim", description="Base Docker image for testing")
-    docker_network_mode: str = Field(default="bridge", description="Docker network mode")
-    
-    # API settings
-    api_key: Optional[str] = Field(default=None, description="API key for webhook authentication")
-    cors_origins: List[str] = Field(default=["*"], description="CORS allowed origins")
-    request_timeout: int = Field(default=300, description="API request timeout in seconds")
+    # Target repositories - NO DEFAULTS
+    target_repositories: List[str] = Field(description="List of target repositories")
     
     def __init__(self, **kwargs):
-        """Initialize settings with LLM config from .env file."""
+        """Initialize settings with strict config from .env file."""
         super().__init__(**kwargs)
         
-        # Load LLM configuration from .env file
+        # Load configuration from .env file using strict config
         try:
             config = get_config()
-            llm_config = config.get_llm_config()
             
-            # Set LLM settings from .env file
+            # Set all values from .env file
+            self.environment = config.get('environment')
+            self.log_level = config.get('log_level')
+            self.debug_mode = config.get('debug_mode')
+            
+            # Agent settings
+            agent_config = config.get_agent_config()
+            self.api_host = "0.0.0.0"  # Standard for containers
+            self.api_port = agent_config['port']
+            
+            # LLM settings from .env file
+            llm_config = config.get_llm_config()
             self.llm_provider = llm_config['provider']
             self.llm_model = llm_config['model']
             self.llm_temperature = llm_config['temperature']
             self.llm_max_tokens = llm_config['max_tokens']
             self.llm_timeout = llm_config['timeout']
+            self.openai_api_key = llm_config['api_key']
+            
+            # Workspace settings
+            workspace_config = config.get_workspace_config()
+            self.workspace_base_path = workspace_config['base_path']
+            self.max_concurrent_tasks = workspace_config['max_concurrent_tasks']
+            self.workflow_timeout = workspace_config['workflow_timeout']
+            self.testing_timeout = workspace_config['testing_timeout']
+            
+            # GitHub settings
+            github_config = config.get_github_config()
+            self.github_username = github_config['user_name']
+            self.github_email = github_config['user_email']
+            self.github_token = github_config['token']
+            self.target_repositories = github_config['target_repositories']
             
         except Exception as e:
             # FAIL FAST - No fallbacks, no defaults
-            raise RuntimeError(f"❌ CRITICAL: Cannot load LLM configuration from .env file: {e}")
+            raise RuntimeError(f"❌ CRITICAL: Cannot load configuration from .env file: {e}")
     
     @validator("llm_temperature")
     def validate_temperature(cls, v):
@@ -149,12 +154,14 @@ class Settings(BaseSettings):
 
 
 # Global settings instance
-settings = Settings()
-
+_settings_instance = None
 
 def get_settings() -> Settings:
-    """Get the global settings instance."""
-    return settings
+    """Get the global settings instance"""
+    global _settings_instance
+    if _settings_instance is None:
+        _settings_instance = Settings()
+    return _settings_instance
 
 
 def validate_settings() -> None:
@@ -164,7 +171,7 @@ def validate_settings() -> None:
     Raises:
         ValueError: If required settings are missing
     """
-    missing = settings.validate_required_settings()
+    missing = get_settings().validate_required_settings()
     if missing:
         raise ValueError(
             f"Missing required environment variables: {', '.join(missing)}\n"
